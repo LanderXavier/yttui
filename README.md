@@ -5,7 +5,7 @@ Reproductor simple, sin ads, con atajos. Escribes `yttui` y listo.
 ## Instalar
 
 ```bash
-cd /home/lander/Lander/cosillas/yttui
+cd yttui
 pip install -e . --break-system-packages
 ```
 
@@ -63,7 +63,7 @@ Atajos:
 | `?` | ayuda |
 | `q` | salir |
 
-Visualizador: panel grande de 12 filas estilo WMP/Ares con el título arriba y barras `██` de colores (verde -> amarillo -> rojo) que laten con la música, más picos `──` que caen lento. Las barras centrales son altas y se apagan hacia los lados. Lee el audio real del sistema (monitor PipeWire + FFT con numpy): los graves pegan con los golpes del tema. Si no hay monitor, usa simulación. Terminal mínima 70x27 para que quepa todo.
+Visualizador: panel grande de 12 filas estilo WMP/Ares con el título arriba y barras `██` de colores (verde -> amarillo -> rojo) que laten con la música, más picos `──` que caen lento. Las barras centrales son altas y se apagan hacia los lados. Lee el audio real del sistema (monitor PipeWire + FFT con numpy): los graves pegan con los golpes del tema. Si no hay monitor, usa simulación. Terminal mínima 70x29 para que quepa todo.
 
 Modo radio [radio]: al poner un tema suelto se precargan parecidos en la cola automáticamente (hilo en segundo plano, sin congelar). Cuando se acaba un tema o la cola, sigue solo con parecidos (como el autoplay de YouTube). Con `n` al final de la cola también arranca radio. `r` en `one` repite el mismo.
 
