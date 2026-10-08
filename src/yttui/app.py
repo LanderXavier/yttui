@@ -503,11 +503,11 @@ class App:
             self._put(0, cx, tab, attr)
             cx += len(tab) + 1
         # estado derecha: vol + shuffle + repeat + foco
-        vol_blocks = round(max(0, min(130, self.player.volume)) / 130 * 8)
+        vol_blocks = round(max(0, min(100, self.player.volume)) / 100 * 8)
         vol_bar = "█" * vol_blocks + "░" * (8 - vol_blocks)
         focus_txt = "◀ lista" if self.focus == "left" else "cola ▶"
         # (evita emoji: solo texto)
-        right = f" {focus_txt}   Vol {vol_bar} {self.player.volume}   {'SHUF' if self.shuffle else 'seq'}   rep:{self.repeat} "
+        right = f" {focus_txt}   Vol {vol_bar} {self.player.volume:3d}   {'SHUF' if self.shuffle else 'seq'}   rep:{self.repeat} "
         if len(right) < w - cx:
             self._put(0, w - 1 - len(right), right, c_dim)
 
@@ -653,7 +653,7 @@ class App:
             icon = "▶" if playing else ("❚❚" if cur else "○")
             now_txt = self.fit(self.label(cur), w - 42) if cur else "nada sonando"
             status = f" {icon}  {now_txt} "
-            flags = f" Vol {self.player.volume}  │  {'SHUF' if self.shuffle else 'seq'}  │  rep:{self.repeat} "
+            flags = f" Vol {self.player.volume:3d}  │  {'SHUF' if self.shuffle else 'seq'}  │  rep:{self.repeat} "
             line3 = (status + " " * max(1, w - 1 - len(status) - len(flags)) + flags)[: w - 1]
             self._put(h - 3, 0, line3, c_bold)
             self._put(h - 2, 0, ("› " + self.fit(HELP if self.show_help else self.msg, w - 4)).ljust(w - 1)[: w - 1])

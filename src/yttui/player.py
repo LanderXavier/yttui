@@ -137,7 +137,7 @@ class Player:
         _send(["seek", secs, "relative"])
 
     def vol(self, delta: int) -> None:
-        self.volume = max(0, min(130, self.volume + delta))
+        self.volume = max(0, min(100, self.volume + delta))
         _send(["set_property", "volume", self.volume])
 
     def is_idle(self) -> bool:
