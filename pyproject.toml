@@ -1,0 +1,20 @@
+[project]
+name = "yttui"
+version = "0.1.0"
+description = "Reproductor de YouTube Music en terminal para CachyOS. Simple, sin ads, con cookies."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "ytmusicapi>=1.6",
+  "yt-dlp>=2024.1",
+]
+
+[project.scripts]
+yttui = "yttui.__main__:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
