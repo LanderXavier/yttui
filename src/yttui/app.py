@@ -60,6 +60,7 @@ class App:
         self._pending: tuple | None = None  # (token, kind, datos) resuelto en hilo
         self.loading = False  # resolviendo/cambiando de tema (se sigue animando)
         self.live_gain = 0.0  # cuánto de la capa real se suma (entra lento, ~1.5s)
+        self.viz_ceiling = 0.85  # techo adaptativo: el pico vivo se reescala al 85%
         self.viz_levels: list[float] = []
         self.viz_peaks: list[float] = []
         self.meter = AudioMeter()
@@ -420,10 +421,20 @@ class App:
         want = 1.0 if energy > 0.08 else 0.0
         self.live_gain += (want - self.live_gain) * (0.08 if want > self.live_gain else 0.05)
         g = self.live_gain
+        # Normalización automática: el techo persigue el pico vivo (ataque
+        # rápido, salida lenta) y reescala la capa viva al 60%: sumada al fondo
+        # (~0.25 de media) el total queda en ~85% sin tocar el borde de arriba.
+        # Solo mira la capa viva: en silencio o sin audio real se congela para
+        # no inflar la simulación de fondo. Techo duro al 92% por seguridad.
+        if live is not None and energy > 0.02:
+            c = self.viz_ceiling
+            self.viz_ceiling = c + (energy - c) * (0.5 if energy > c else 0.05)
+        agc = 0.60 / max(0.15, self.viz_ceiling)
+        agc = max(0.4, min(3.0, agc))
         for i in range(n):
             l = max(0.0, min(1.0, live[i])) if live is not None else 0.0
-            tgt = (sim[i] * 0.65 + l * 0.9 * g) * edge_fade(i, n)
-            tgt = max(0.03, min(1.0, tgt))
+            tgt = (sim[i] * 0.65 + l * 0.9 * g * agc) * edge_fade(i, n)
+            tgt = max(0.03, min(0.92, tgt))
             cur = self.viz_levels[i]
             rate = 0.6 if tgt > cur else 0.3
             self.viz_levels[i] = cur + (tgt - cur) * rate
