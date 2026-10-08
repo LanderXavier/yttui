@@ -5,6 +5,7 @@ Reproductor simple, sin ads, con atajos. Escribes `yttui` y listo.
 ## Instalar
 
 ```bash
+git clone https://github.com/LanderXavier/yttui.git
 cd yttui
 pip install -e . --break-system-packages
 ```
