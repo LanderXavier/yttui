@@ -20,7 +20,7 @@ from .ytm import (
     search_all,
 )
 
-HELP = "1·2·3 pantallas   Tab foco   : buscar   Enter reproducir   a/A a cola   Espacio pausa   n/p sig/ant   s shuffle   r repeat   Supr quita   ? ayuda   q salir"
+HELP = "1·2·3 pantallas   Tab foco   : buscar   Enter reproducir   A/a a cola   Espacio pausa   n/p sig/ant   s shuffle   r repeat   Supr quita   ? ayuda   q salir"
 # Atajos agrupados para el pie (tecla, descripción). Se dibuja con la tecla
 # resaltada para que se lea de un vistazo.
 KEY_HINTS: list[tuple[str, str]] = [
@@ -28,8 +28,8 @@ KEY_HINTS: list[tuple[str, str]] = [
     ("Tab", "foco"),
     (":", "buscar"),
     ("Enter", "tocar"),
-    ("a", "+siguiente"),
-    ("A", "+final"),
+    ("a", "+final"),
+    ("A", "+siguiente"),
     ("Espacio", "pausa"),
     ("n/p", "sig/ant"),
     ("s", "shuffle"),
@@ -49,8 +49,8 @@ HELP_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
     ("Música", [
         ("Enter", "reproducir lo seleccionado"),
-        ("a", "sumar a continuación"),
-        ("A", "sumar al final"),
+        ("a", "sumar al final"),
+        ("A", "sumar a continuación"),
         ("Ctrl+A", "sumar todo lo visible"),
         ("Espacio", "pausa / sigue"),
         ("n / p", "siguiente / anterior"),
@@ -162,7 +162,7 @@ class App:
                 songs, need_auth = get_liked_songs()
                 self.results = songs
                 self.found_playlists = []
-                self.msg = "Falta login: `yttui --setup`" if need_auth else f"* {len(songs)} likes. Enter > | a +siguiente | A +final."
+                self.msg = "Falta login: `yttui --setup`" if need_auth else f"* {len(songs)} likes. Enter > | a +final | A +siguiente."
             elif self.screen == "library":
                 pls, need_auth = get_library_playlists()
                 self.playlists = pls
@@ -986,9 +986,9 @@ class App:
             elif c == ord("p"):
                 self.play_next(-1)
             elif c == ord("a"):
-                self.selected_action(add_only="next")
-            elif c == ord("A"):
                 self.selected_action(add_only="end")
+            elif c == ord("A"):
+                self.selected_action(add_only="next")
             elif c == 1:  # Ctrl+A: todo lo visible al final
                 songs = [d for kind, d in self.left_items() if kind == "song"] if self.focus == "left" else []
                 if songs:
