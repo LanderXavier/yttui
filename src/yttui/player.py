@@ -53,6 +53,7 @@ class Player:
         self.volume = 80
         self.current: dict | None = None
         self._fade_gen = 0  # si cambia de tema a mitad del fundido, se cancela el viejo
+        self._ramp_lock = threading.Lock()  # un solo fundido a la vez (si no, se pisan y puede quedar a 0)
 
     def start(self) -> None:
         if self.proc and self.proc.poll() is None:
@@ -119,12 +120,25 @@ class Player:
         except Exception:
             cur = float(self.volume)
         steps = max(1, int(duration / 0.05))
-        for i in range(1, steps + 1):
-            if gen != self._fade_gen:
-                return  # otro cambio tomó el mando
-            v = round(cur + (target - cur) * i / steps)
-            _send(["set_property", "volume", v])
-            time.sleep(duration / steps)
+        # Serializado: el fundido viejo detecta el gen nuevo y aborta rápido
+        # (libera el lock en ~50ms), así el nuevo es el único que escribe y
+        # el volumen final siempre es el suyo. Sin esto, dos fundidos a la
+        # vez intercalaban comandos y a veces quedaba a 0 sonando en silencio.
+        with self._ramp_lock:
+            for i in range(1, steps + 1):
+                if gen != self._fade_gen:
+                    return  # otro cambio tomó el mando
+                v = round(cur + (target - cur) * i / steps)
+                _send(["set_property", "volume", v])
+                time.sleep(duration / steps)
+            # Cierre autoritario: por si algún comando suelto se coló.
+            if gen == self._fade_gen:
+                _send(["set_property", "volume", target])
+
+    def restore_volume(self) -> None:
+        """Devuelve el volumen real (tras un fallo que nos dejó fundidos a 0)."""
+        self._fade_gen += 1  # cancela fundidos en curso
+        _send(["set_property", "volume", self.volume])
 
     def toggle(self) -> None:
         self.paused = not self.paused

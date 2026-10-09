@@ -20,13 +20,59 @@ from .ytm import (
     search_all,
 )
 
-HELP = "1·2·3 pantallas   Tab foco   / buscar   Enter reproducir   a/A a cola   Espacio pausa   n/p sig/ant   s shuffle   r repeat   Supr quita   ? ayuda   q salir"
+HELP = "1·2·3 pantallas   Tab foco   : buscar   Enter reproducir   a/A a cola   Espacio pausa   n/p sig/ant   s shuffle   r repeat   Supr quita   ? ayuda   q salir"
+# Atajos agrupados para el pie (tecla, descripción). Se dibuja con la tecla
+# resaltada para que se lea de un vistazo.
+KEY_HINTS: list[tuple[str, str]] = [
+    ("1·2·3", "pantalla"),
+    ("Tab", "foco"),
+    (":", "buscar"),
+    ("Enter", "tocar"),
+    ("a", "+siguiente"),
+    ("A", "+final"),
+    ("Espacio", "pausa"),
+    ("n/p", "sig/ant"),
+    ("s", "shuffle"),
+    ("r", "repeat"),
+    ("Supr", "quita"),
+    ("?", "ayuda"),
+    ("q", "salir"),
+]
+
+# Ficha completa para el panel de ayuda (?) con dos columnas.
+HELP_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("Navegar", [
+        ("1 / 2 / 3", "Buscar · Likes · Librería"),
+        (":", "buscar (como en vim)"),
+        ("Tab", "saltar entre lista y cola"),
+        ("↑ ↓ / k j", "mover cursor"),
+    ]),
+    ("Música", [
+        ("Enter", "reproducir lo seleccionado"),
+        ("a", "sumar a continuación"),
+        ("A", "sumar al final"),
+        ("Ctrl+A", "sumar todo lo visible"),
+        ("Espacio", "pausa / sigue"),
+        ("n / p", "siguiente / anterior"),
+    ]),
+    ("Ajustes", [
+        ("s", "shuffle on/off"),
+        ("r", "repeat off→all→one"),
+        ("+ / -", "volumen"),
+        ("← / →", "∓10 segundos"),
+        ("Supr", "quitar de la cola"),
+        ("q", "salir"),
+    ]),
+]
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # bolita de carga tipo navegador
 
 VIZ_H = 12  # panel alto estilo WMP/Ares
 VIZ_MIN_H = 29
 VIZ_MIN_W = 70
+
+QUEUE_KEEP_ABOVE = 5  # historial visible por encima del que suena: lo más viejo se purga
+QUEUE_MAX_FUTURE = 20  # tope de temas en espera que mete la radio sola (no toca tus playlists)
 
 
 def edge_fade(i: int, n: int) -> float:
@@ -50,7 +96,7 @@ class App:
         self.sel = 0
         self.qsel = 0  # cursor de la cola (panel derecho)
         self.focus = "left"  # left|queue: dónde está el seleccionado (Tab lo cambia)
-        self.msg = "Pulsa / para buscar canciones o playlists. ? ayuda."
+        self.msg = "Pulsa : para buscar canciones o playlists. ? ayuda."
         self.show_help = False
         self.shuffle = False
         self.repeat = "off"  # off|all|one
@@ -58,6 +104,8 @@ class App:
         self.started_at = 0.0
         self._play_token = 0
         self._pending: tuple | None = None  # (token, kind, datos) resuelto en hilo
+        self._pending_lock = threading.Lock()  # hilos resuelven URLs en paralelo
+        self._consec_fails = 0  # fallos seguidos de resolución (para no reintentar infinito)
         self.loading = False  # resolviendo/cambiando de tema (se sigue animando)
         self.live_gain = 0.0  # cuánto de la capa real se suma (entra lento, ~1.5s)
         self.viz_ceiling = 0.85  # techo adaptativo: el pico vivo se reescala al 85%
@@ -130,6 +178,36 @@ class App:
         self.qsel = max(0, min(self.qsel, max(0, len(self.queue) - 1)))
         if self.qpos >= len(self.queue):
             self.qpos = len(self.queue) - 1
+        if self.qpos < -1:
+            self.qpos = -1
+
+    def prune_queue(self) -> None:
+        """Poda el historial por encima del que suena.
+
+        Solo borra temas ya pasados (índices < qpos), dejando como máximo
+        QUEUE_KEEP_ABOVE por encima. Ajusta qpos/qsel para que no apunten
+        a otro tema. No toca lo que queda por sonar (qpos en adelante).
+        Así la columna de la cola no crece sin freno y no satura la UI.
+        Se aplica siempre (también con shuffle/repeat): la cola entera
+        ya no se guarda, solo la ventana útil.
+        """
+        if self.qpos is None or self.qpos < 0:
+            return
+        if not self.queue:
+            return
+        excess = self.qpos - QUEUE_KEEP_ABOVE
+        if excess > 0:
+            del self.queue[0:excess]
+            self.qpos -= excess
+            self.qsel = max(0, min(self.qsel - excess, len(self.queue) - 1))
+
+    def _queue_ids(self) -> set:
+        return {t.get("videoId") for t in self.queue if t.get("videoId")}
+
+    def _radio_room(self) -> int:
+        """Hueco libre para temas automáticos sin pasar QUEUE_MAX_FUTURE."""
+        future = len(self.queue) - max(0, self.qpos) - 1
+        return max(0, QUEUE_MAX_FUTURE - future)
 
     def switch_focus(self) -> None:
         self.clamp()
@@ -179,10 +257,15 @@ class App:
             self.qsel = pos
             self.msg = f"+siguiente: {self.label(track)[:70]} ({len(self.queue)} en cola)"
         else:
+            was_empty = not self.queue
             self.queue.append(track)
             if self.qpos == -1:
                 self.qpos = 0
-            self.qsel = len(self.queue) - 1
+            # No mover qsel al final: si lo hiciéramos, la columna saltaba
+            # al fondo y el tema que suena se perdía de vista (ese era el
+            # "error" visual al añadir). Solo centra si la cola estaba vacía.
+            if was_empty:
+                self.qsel = 0
             self.msg = f"+final: {self.label(track)[:70]} ({len(self.queue)} en cola)"
 
     def add_many(self, tracks: list[dict], where: str = "end") -> None:
@@ -204,17 +287,33 @@ class App:
         if not track.get("videoId"):
             self.msg = "Eso es una playlist: Enter la abre, `a` la suma entera."
             return
-        if add_to_queue and track not in self.queue:
-            self.queue.append(track)
-            self.qpos = len(self.queue) - 1
+        if add_to_queue:
+            # Busca por videoId (los dicts cambian entre búsquedas y el `in`
+            # por dict entero fallaba): si ya está, salta a su posición en
+            # vez de duplicarlo y dejar qpos apuntando a otro tema.
+            found = -1
+            vid = track.get("videoId")
+            for i, t in enumerate(self.queue):
+                if t.get("videoId") == vid:
+                    found = i
+                    break
+            if found == -1:
+                self.queue.append(track)
+                self.qpos = len(self.queue) - 1
+            else:
+                self.qpos = found
+        # Poda el historial (máx QUEUE_KEEP_ABOVE por encima) para que la
+        # columna no crezca sin freno. Mantiene qpos apuntando al mismo tema.
+        self.prune_queue()
         self.qsel = max(0, self.qpos)
         # El tema viejo se va apagando mientras se resuelve el nuevo (caché o red).
         # La resolución va en hilo: el loop sigue dibujando y la bolita no se para.
         if self.player.current is not None:
             self.player.fade_out_async(0.35)
-        self._play_token += 1
-        tok = self._play_token
-        self._pending = None
+        with self._pending_lock:
+            self._play_token += 1
+            tok = self._play_token
+            self._pending = None
         self.loading = True
         self.msg = f"Cargando: {self.label(track)[:80]}..."
         self.draw()
@@ -222,23 +321,45 @@ class App:
         def job() -> None:
             try:
                 url = get_stream_url(track["videoId"])  # instantáneo si está en caché
-                self._pending = (tok, "url", (track, url, ""))
+                res = (track, url, "")
             except Exception as e:
-                self._pending = (tok, "url", (track, "", str(e)[:140]))
+                res = (track, "", str(e)[:140])
+            # Solo publica si sigues siendo el cambio vigente: sin esto un
+            # hilo viejo y lento pisaba el resultado del nuevo y la UI se
+            # quedaba en "Cargando" (o en silencio) para siempre.
+            with self._pending_lock:
+                if tok == self._play_token:
+                    self._pending = (tok, "url", res)
 
         threading.Thread(target=job, daemon=True).start()
 
     def _finish_pending(self) -> None:
-        if not self._pending or self._pending[0] != self._play_token:
-            return
-        _, kind, data = self._pending
-        self._pending = None
+        with self._pending_lock:
+            if not self._pending or self._pending[0] != self._play_token:
+                return
+            _, kind, data = self._pending
+            self._pending = None
         if kind == "url":
             track, url, err = data
             if not url:
                 self.loading = False
-                self.msg = f"No reproduce: {err}"
+                self._consec_fails += 1
+                # El fundido de salida nos dejó a 0 y el tema viejo (si seguía
+                # sonando) quedó mudo con la UI en "reproduciendo": restaura.
+                self.player.restore_volume()
+                if self._consec_fails >= 4:
+                    self.msg = f"No reproduce ({self._consec_fails} seguidos): {err}"
+                    return
+                # Salta solo al siguiente en vez de quedarse mudo.
+                self.msg = f"No reproduce, salto al siguiente: {err}"
+                if self.qpos + 1 < len(self.queue):
+                    self.qpos += 1
+                    self.play_track(self.queue[self.qpos], add_to_queue=False)
+                elif self.repeat == "all" and self.queue:
+                    self.qpos = 0
+                    self.play_track(self.queue[0], add_to_queue=False)
                 return
+            self._consec_fails = 0
             self.player.play_url(track, url, fade_out=False, fade_in=True)
             self.started_at = time.time()
             self.loading = False
@@ -255,6 +376,22 @@ class App:
                 self.loading = False
                 self.msg = f"[radio]: {err or 'no encontré parecidos.'}"
                 return
+            # Tope de espera: solo mete los que quepan (el resto se descarta,
+            # la radio ya traerá más al llegar al final).
+            room = self._radio_room()
+            # Si la cola ya va llena de espera, reproduce el primero que haya
+            # en vez de seguir apilando.
+            if room <= 0:
+                self.loading = False
+                self.msg = f"[radio]: cola llena ({len(self.queue)}), dale n para avanzar."
+                if 0 <= self.qpos + 1 < len(self.queue):
+                    self.qpos += 1
+                    self.play_track(self.queue[self.qpos], add_to_queue=False)
+                return
+            fresh = fresh[:room]
+            if not fresh:
+                self.loading = False
+                return
             self.queue.extend(fresh)
             preresolve_url(fresh[0].get("videoId", ""))
             self.qpos = len(self.queue) - len(fresh)
@@ -265,12 +402,14 @@ class App:
     def _prefetch_radio(self, seed: dict, token: int) -> None:
         def job() -> None:
             try:
-                if len(self.queue) > 40:
+                room = self._radio_room()
+                if room <= 0 or len(self.queue) > 40:
                     return
-                fresh = [t for t in get_radio_tracks(seed.get("videoId", ""), limit=15) if t not in self.queue]
+                known = self._queue_ids()
+                fresh = [t for t in get_radio_tracks(seed.get("videoId", ""), limit=min(15, room)) if t.get("videoId") not in known]
                 if not fresh:
                     return
-                self.queue.extend(fresh)
+                self.queue.extend(fresh[:room])
                 if fresh:
                     preresolve_url(fresh[0].get("videoId", ""))
                 if token == self._play_token:
@@ -281,19 +420,24 @@ class App:
 
     def start_radio(self, seed: dict) -> None:
         """Modo radio: mete temas parecidos a la cola y sigue sonando (en hilo)."""
-        self._play_token += 1
-        tok = self._play_token
-        self._pending = None
+        with self._pending_lock:
+            self._play_token += 1
+            tok = self._play_token
+            self._pending = None
         self.loading = True
         self.msg = f"[radio]: buscando parecidos a {seed.get('title','')[:40]}..."
         self.draw()
 
         def job() -> None:
             try:
-                fresh = [t for t in get_radio_tracks(seed.get("videoId", ""), limit=15) if t not in self.queue]
-                self._pending = (tok, "radio", (seed, fresh, ""))
+                known = self._queue_ids()
+                fresh = [t for t in get_radio_tracks(seed.get("videoId", ""), limit=15) if t.get("videoId") not in known]
+                res = (seed, fresh, "")
             except Exception as e:
-                self._pending = (tok, "radio", (seed, [], f"falló: {str(e)[:100]}"))
+                res = (seed, [], f"falló: {str(e)[:100]}")
+            with self._pending_lock:
+                if tok == self._play_token:
+                    self._pending = (tok, "radio", res)
 
         threading.Thread(target=job, daemon=True).start()
 
@@ -328,7 +472,7 @@ class App:
 
     def play_next(self, step: int) -> None:
         if not self.queue:
-            self.msg = "Cola vacía: busca con / y suma con `a`."
+            self.msg = "Cola vacía: busca con : y suma con `a`."
             return
         if self.repeat == "one" and step > 0 and self.qpos >= 0:
             self.play_track(self.queue[self.qpos], add_to_queue=False)
@@ -561,7 +705,7 @@ class App:
                 attr = 0
             self._put(y, 0, row_txt, attr)
         if not items:
-            self._put(LTOP, 2, self.fit("— vacío: pulsa / para buscar —", div_x - 4), c_dim)
+            self._put(LTOP, 2, self.fit("— vacío: pulsa : para buscar —", div_x - 4), c_dim)
         # derecha (cola)
         qstart = max(0, min(max(0, self.qsel - list_rows + 1), max(0, len(self.queue) - list_rows)))
         for i in range(list_rows):
@@ -607,7 +751,7 @@ class App:
         if cur:
             vtxt = f" ♪  {self.fit(self.label(cur), w - 14)} "
         else:
-            vtxt = " ♪  nada sonando — busca con / "
+            vtxt = " ♪  nada sonando — busca con : "
         if self.loading:
             ball = SPINNER[self.tick % len(SPINNER)]
             vtxt = f" {ball}  Cargando… "
@@ -656,11 +800,74 @@ class App:
             flags = f" Vol {self.player.volume:3d}  │  {'SHUF' if self.shuffle else 'seq'}  │  rep:{self.repeat} "
             line3 = (status + " " * max(1, w - 1 - len(status) - len(flags)) + flags)[: w - 1]
             self._put(h - 3, 0, line3, c_bold)
-            self._put(h - 2, 0, ("› " + self.fit(HELP if self.show_help else self.msg, w - 4)).ljust(w - 1)[: w - 1])
-            self._put(h - 1, 0, self.fit(HELP, w - 1), c_dim)
+            self._put(h - 2, 0, ("› " + self.fit(self.msg, w - 4)).ljust(w - 1)[: w - 1])
+            self._draw_key_hints(h - 1, w, c_cyan, c_dim)
         except curses.error:
             pass
+        if self.show_help:
+            self._draw_help_overlay(w, h)
         s.refresh()
+
+    def _draw_key_hints(self, y: int, w: int, c_key: int, c_desc: int) -> None:
+        """Pie con cada tecla resaltada: `Tab foco` se lee de un vistazo."""
+        try:
+            self.s.addstr(y, 0, " " * (w - 1))
+        except curses.error:
+            return
+        x = 1
+        bold = curses.A_BOLD
+        for i, (key, desc) in enumerate(KEY_HINTS):
+            seg_key = f"[{key}]"
+            seg_desc = f" {desc}"
+            need = len(seg_key) + len(seg_desc) + 2  # + separador
+            if x + len(seg_key) + len(seg_desc) >= w - 1:
+                break
+            try:
+                self.s.addstr(y, x, seg_key, bold | c_key)
+                x += len(seg_key)
+                self.s.addstr(y, x, seg_desc, c_desc)
+                x += len(seg_desc)
+                if i < len(KEY_HINTS) - 1:
+                    self.s.addstr(y, x, "  · ", c_desc)
+                    x += 4
+            except curses.error:
+                break
+
+    def _draw_help_overlay(self, w: int, h: int) -> None:
+        """Panel centrado con todos los atajos agrupados. Lo abre/cierra `?`."""
+        rows: list[tuple[str, str, str]] = []  # (grupo, tecla, qué hace)
+        for group, items in HELP_GROUPS:
+            for key, desc in items:
+                rows.append((group, key, desc))
+        n_groups = len(HELP_GROUPS)
+        box_h = len(rows) + n_groups + 5  # título + huecos + borde + pista cierre
+        box_w = min(w - 4, 62)
+        if box_h > h - 4 or box_w < 40:
+            return  # terminal pequeña: no tapa todo
+        y0 = (h - box_h) // 2
+        x0 = (w - box_w) // 2
+        c_title = self._pair(5) | curses.A_BOLD
+        try:
+            for r in range(box_h):
+                self._put(y0 + r, x0, " " * box_w, curses.A_REVERSE)
+            self._put(y0, x0, ("  Atajos  (? o Esc cierra)  ").ljust(box_w)[:box_w], c_title | curses.A_REVERSE)
+            y = y0 + 2
+            last_group = ""
+            for group, key, desc in rows:
+                if group != last_group:
+                    if last_group:
+                        y += 1
+                    self._put(y, x0 + 2, f"— {group} —", curses.A_BOLD | curses.A_REVERSE)
+                    y += 1
+                    last_group = group
+                if y >= y0 + box_h - 2:
+                    break
+                line = f"  {key:<12} {desc}"
+                self._put(y, x0 + 2, self.fit(line, box_w - 4), curses.A_REVERSE)
+                y += 1
+            self._put(y0 + box_h - 1, x0, ("  Pulsa ? o Esc para volver  ").ljust(box_w)[:box_w], curses.A_DIM | curses.A_REVERSE)
+        except curses.error:
+            pass
 
     def selected_action(self, add_only: bool | str = False) -> None:
         """add_only False = reproducir, 'next' = a continuación, 'end' = al final."""
@@ -678,7 +885,7 @@ class App:
             return
         items = self.left_items()
         if not items:
-            self.msg = "Nada aquí: busca con / primero."
+            self.msg = "Nada aquí: busca con : primero."
             return
         self.clamp()
         if not (0 <= self.sel < len(items)):
@@ -743,13 +950,18 @@ class App:
                 continue
             items_len = len(self.left_items())
             if c == ord("q"):
+                if self.show_help:
+                    self.show_help = False
+                    continue
                 break
             elif c == ord("?"):
                 self.show_help = not self.show_help
+            elif c == 27:  # Esc cierra la ayuda
+                self.show_help = False
             elif c in (ord("1"), ord("2"), ord("3")):
                 self.screen = {"1": "search", "2": "likes", "3": "library"}[chr(c)]
                 self.load_screen()
-            elif c == ord("/"):
+            elif c in (ord(":"), ord("/")):  # : como en vim (/ sigue valiendo)
                 self.do_search()
             elif c in (9, curses.KEY_BTAB, 353):
                 # Tab y Shift+Tab: el seleccionado salta entre buscar y cola
@@ -766,7 +978,7 @@ class App:
                     self.sel = max(0, min(max(0, items_len - 1), self.sel + 1))
             elif c == ord(" "):
                 if self.player.current is None:
-                    self.msg = "Nada sonando: busca con / y dale Enter."
+                    self.msg = "Nada sonando: busca con : y dale Enter."
                 else:
                     self.player.toggle()
             elif c == ord("n"):
