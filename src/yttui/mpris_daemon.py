@@ -70,7 +70,10 @@ def _status() -> str:
             SOCK = Path("/tmp/yttui-mpv.sock")
         if not SOCK.exists():
             return "Stopped"
-        if _mpv("idle-active"):
+        idle = _mpv("idle-active")
+        if idle is None:
+            return "Stopped"  # socket huérfano: mpv no responde
+        if idle:
             return "Stopped"
         return "Paused" if _mpv("pause") else "Playing"
     except Exception:
@@ -302,15 +305,40 @@ async def _serve() -> None:
     if not primary:
         return  # ya hay otro dueño (otra instancia): salir callado
 
+    try:
+        app_pid = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    except Exception:
+        app_pid = 0
+
+    def _app_dead() -> bool:
+        if not app_pid:
+            return False
+        try:
+            os.kill(app_pid, 0)
+            return False
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        except Exception:
+            return False
+
     last = ("", "", 0.0, "", "")
     missing = 0
     while True:
         await asyncio.sleep(1)
+        if _app_dead():
+            return  # la app murió (q, Ctrl+C, terminal): apagarse al instante
         try:
             from .player import SOCK
         except Exception:
             SOCK = Path("/tmp/yttui-mpv.sock")
-        if not SOCK.exists():
+        # Vivo = socket existe Y responde (un archivo huérfano no cuenta).
+        try:
+            mpv_vivo = _mpv("idle-active") is not None
+        except Exception:
+            mpv_vivo = False
+        if not SOCK.exists() or not mpv_vivo:
             missing += 1
             if missing >= 30:
                 return  # mpv lleva 30s muerto: la app se cerró, apagarse

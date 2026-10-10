@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import signal
 import subprocess
 import sys
 import threading
@@ -123,6 +124,7 @@ class App:
         self.viz_peaks: list[float] = []
         self.meter = AudioMeter()
         self._cmd_fd = None  # fifo del widget (se abre en run)
+        self._sig_quit = False  # Ctrl+C / cerrar terminal / kill piden salida limpia
 
     # ---- helpers ----
     def label(self, t: dict) -> str:
@@ -1005,6 +1007,20 @@ class App:
             pass
         self.meter.start()  # mide el audio real en segundo plano
         self._cmd_fd = None
+        self._sig_quit = False
+        try:  # Ctrl+C, cerrar terminal o kill: salir limpio (matar mpv, no huérfanos)
+            _self = self
+
+            def _ask_quit(_signo, _marco):
+                _self._sig_quit = True
+
+            for _sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                try:
+                    signal.signal(_sig, _ask_quit)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         try:
             try:
                 os.mkfifo(CMD_FIFO)
@@ -1015,7 +1031,7 @@ class App:
             self._cmd_fd = None
         try:  # demonio MPRIS aparte, silenciado: si falla, la app sigue igual
             subprocess.Popen(
-                [sys.executable, "-m", "yttui.mpris_daemon"],
+                [sys.executable, "-m", "yttui.mpris_daemon", str(os.getpid())],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )
@@ -1040,6 +1056,8 @@ class App:
             pass
         while True:
             self.tick += 1
+            if self._sig_quit:  # Ctrl+C / terminal cerrada / kill: salir limpio
+                break
             self._drain_cmd_fifo()  # botones del widget (no bloquea)
             self._finish_pending()  # remata lo resuelto en hilo sin congelar
             self.draw()
@@ -1138,13 +1156,17 @@ class App:
                     gone = self.queue.pop()
                     self.msg = f"-cola: {gone.get('title','')[:60]} ({len(self.queue)} quedan)"
         self.meter.stop()
-        self.player.stop()
+        self.player.stop()  # mata mpv: sin huérfanos sonando ni widget atascado
         try:
             if self._cmd_fd is not None:
                 os.close(self._cmd_fd)
         except Exception:
             pass
         self._cmd_fd = None
+        try:  # el widget deja de mostrar la canción al instante
+            os.remove(NOWPLAYING)
+        except Exception:
+            pass
 
 
 def main(stdscr) -> None:
