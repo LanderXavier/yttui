@@ -55,6 +55,19 @@ class Player:
         self._fade_gen = 0  # si cambia de tema a mitad del fundido, se cancela el viejo
         self._ramp_lock = threading.Lock()  # un solo fundido a la vez (si no, se pisan y puede quedar a 0)
 
+    @staticmethod
+    def _mpris_script() -> str | None:
+        """Ruta del plugin mpv-mpris si está instalado (para el widget de Plasma)."""
+        for p in (
+            "/usr/lib/mpv/mpris.so",
+            "/usr/lib/mpv-mpris/mpris.so",
+            "/usr/lib32/mpv/mpris.so",
+            "/usr/share/mpv/scripts/mpris.so",
+        ):
+            if Path(p).exists():
+                return p
+        return None
+
     def start(self) -> None:
         if self.proc and self.proc.poll() is None:
             return
@@ -63,9 +76,13 @@ class Player:
                 SOCK.unlink()
             except Exception:
                 pass
+        cmd = ["mpv", "--no-video", "--really-quiet", "--idle=yes",
+             f"--input-ipc-server={SOCK}", "--no-terminal"]
+        mpris = self._mpris_script()
+        if mpris:
+            cmd.append(f"--script={mpris}")
         self.proc = subprocess.Popen(
-            ["mpv", "--no-video", "--really-quiet", "--idle=yes",
-             f"--input-ipc-server={SOCK}", "--no-terminal"],
+            cmd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         for _ in range(40):
@@ -94,6 +111,21 @@ class Player:
         if fade_out and sounding:
             self._ramp(0, 0.30)
         _send(["loadfile", url, "replace"])
+        try:
+            title = f"{track.get('title','')} - {track.get('artists','')}"
+            # force-media-title no lo pisa mpv al cargar (media-title sí).
+            _send(["set_property", "force-media-title", title])
+            _send(["set_property", "media-title", title])
+
+            def _retitle() -> None:
+                for _ in range(3):
+                    time.sleep(0.5)
+                    _send(["set_property", "media-title", title])
+                    _send(["set_property", "force-media-title", title])
+
+            threading.Thread(target=_retitle, daemon=True).start()
+        except Exception:
+            pass
         if fade_in:
             _send(["set_property", "volume", 0])
             self._ramp(self.volume, 0.45)

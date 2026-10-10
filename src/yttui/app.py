@@ -3,8 +3,12 @@ visualizador estilo Winamp/Ares, shuffle/repeat."""
 from __future__ import annotations
 
 import curses
+import json
 import math
+import os
 import random
+import subprocess
+import sys
 import threading
 import time
 
@@ -74,6 +78,12 @@ VIZ_MIN_W = 70
 QUEUE_KEEP_ABOVE = 5  # historial visible por encima del que suena: lo más viejo se purga
 QUEUE_MAX_FUTURE = 20  # tope de temas en espera que mete la radio sola (no toca tus playlists)
 
+# Puente con el widget de Plasma: el demonio MPRIS (proceso aparte,
+# `python -m yttui.mpris_daemon`) escribe aquí; la app lo lee sin hilos
+# ni D-Bus dentro del curses, así la TUI nunca se ensucia.
+CMD_FIFO = "/tmp/yttui-cmd.fifo"
+NOWPLAYING = "/tmp/yttui-nowplaying.json"
+
 
 def edge_fade(i: int, n: int) -> float:
     """1.0 al centro -> ~0.2 en los bordes (se apaga a los lados)."""
@@ -112,6 +122,7 @@ class App:
         self.viz_levels: list[float] = []
         self.viz_peaks: list[float] = []
         self.meter = AudioMeter()
+        self._cmd_fd = None  # fifo del widget (se abre en run)
 
     # ---- helpers ----
     def label(self, t: dict) -> str:
@@ -203,6 +214,83 @@ class App:
 
     def _queue_ids(self) -> set:
         return {t.get("videoId") for t in self.queue if t.get("videoId")}
+
+    # ---- puente widget (fifo): órdenes del demonio MPRIS ----
+    def _write_nowplaying(self) -> None:
+        """Lo que suena + shuffle/repeat, para el demonio del widget."""
+        try:
+            cur = self.player.current or {}
+            with open(NOWPLAYING, "w") as f:
+                json.dump({
+                    "title": cur.get("title", ""), "artists": cur.get("artists", ""),
+                    "album": cur.get("album", ""), "videoId": cur.get("videoId", ""),
+                    "shuffle": self.shuffle, "repeat": self.repeat,
+                }, f)
+        except Exception:
+            pass
+
+    def _drain_cmd_fifo(self) -> None:
+        if self._cmd_fd is None:
+            return
+        try:
+            data = os.read(self._cmd_fd, 4096)
+        except (BlockingIOError, OSError):
+            return
+        except Exception:
+            return
+        if not data:  # el escritor cerró: reabrir para el próximo comando
+            try:
+                os.close(self._cmd_fd)
+                self._cmd_fd = os.open(CMD_FIFO, os.O_RDONLY | os.O_NONBLOCK)
+            except Exception:
+                self._cmd_fd = None
+            return
+        for line in data.decode(errors="ignore").splitlines():
+            try:
+                self._run_cmd(line.strip())
+            except Exception:
+                pass
+
+    def _run_cmd(self, line: str) -> None:
+        if not line:
+            return
+        if line == "next":
+            self.play_next(1)
+        elif line == "prev":
+            self.play_next(-1)
+        elif line == "toggle":
+            if self.player.current is not None:
+                self.player.toggle()
+        elif line == "play":
+            if self.player.current is None:
+                if self.queue:
+                    self.play_track(self.queue[max(0, self.qpos)], add_to_queue=False)
+            elif self.player.paused:
+                self.player.toggle()
+        elif line == "pause":
+            if self.player.current is not None and not self.player.paused:
+                self.player.toggle()
+        elif line == "stop":
+            self.player.next_stop()
+            self.player.current = None
+            self.msg = "Parado desde el widget."
+        elif line.startswith("vol:"):
+            v = max(0, min(100, int(line[4:])))
+            self.player.volume = v
+            from .player import _send as _s
+            _s(["set_property", "volume", v])
+        elif line == "shuffle":
+            self.shuffle = not self.shuffle
+            self.msg = f"Shuffle {'ON SHUF' if self.shuffle else 'OFF SEQ'}"
+            self._write_nowplaying()
+        elif line.startswith("shuffle:"):
+            self.shuffle = line == "shuffle:1"
+            self._write_nowplaying()
+        elif line.startswith("repeat:"):
+            if line[7:] in ("off", "all", "one"):
+                self.repeat = line[7:]
+                self.msg = f"Repeat: {self.repeat}"
+                self._write_nowplaying()
 
     def _radio_room(self) -> int:
         """Hueco libre para temas automáticos sin pasar QUEUE_MAX_FUTURE."""
@@ -364,6 +452,7 @@ class App:
             self.started_at = time.time()
             self.loading = False
             self.msg = f"> {self.label(track)[:90]}"
+            self._write_nowplaying()
             # Deja resuelto el siguiente para que el cambio sea instantáneo
             if 0 <= self.qpos + 1 < len(self.queue):
                 preresolve_url(self.queue[self.qpos + 1].get("videoId", ""))
@@ -915,6 +1004,23 @@ class App:
         except Exception:
             pass
         self.meter.start()  # mide el audio real en segundo plano
+        self._cmd_fd = None
+        try:
+            try:
+                os.mkfifo(CMD_FIFO)
+            except FileExistsError:
+                pass
+            self._cmd_fd = os.open(CMD_FIFO, os.O_RDONLY | os.O_NONBLOCK)
+        except Exception:
+            self._cmd_fd = None
+        try:  # demonio MPRIS aparte, silenciado: si falla, la app sigue igual
+            subprocess.Popen(
+                [sys.executable, "-m", "yttui.mpris_daemon"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, start_new_session=True,
+            )
+        except Exception:
+            pass
         self.s.keypad(True)
         self.s.timeout(120)  # ~8fps: animación suave sin fundir CPU
         try:
@@ -934,6 +1040,7 @@ class App:
             pass
         while True:
             self.tick += 1
+            self._drain_cmd_fifo()  # botones del widget (no bloquea)
             self._finish_pending()  # remata lo resuelto en hilo sin congelar
             self.draw()
             c = self.s.getch()
@@ -998,10 +1105,12 @@ class App:
             elif c == ord("s"):
                 self.shuffle = not self.shuffle
                 self.msg = f"Shuffle {'ON SHUF' if self.shuffle else 'OFF SEQ'}"
+                self._write_nowplaying()
             elif c == ord("r"):
                 order = ["off", "all", "one"]
                 self.repeat = order[(order.index(self.repeat) + 1) % 3]
                 self.msg = f"Repeat: {self.repeat}"
+                self._write_nowplaying()
             elif c in (ord("+"), ord("=")):
                 self.player.vol(5)
             elif c in (ord("-"), ord("_")):
@@ -1030,6 +1139,12 @@ class App:
                     self.msg = f"-cola: {gone.get('title','')[:60]} ({len(self.queue)} quedan)"
         self.meter.stop()
         self.player.stop()
+        try:
+            if self._cmd_fd is not None:
+                os.close(self._cmd_fd)
+        except Exception:
+            pass
+        self._cmd_fd = None
 
 
 def main(stdscr) -> None:

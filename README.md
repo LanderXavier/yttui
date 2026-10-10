@@ -18,6 +18,18 @@ El comando queda en `~/.cargo/bin/yttui` (está en tu PATH). Si reinstalas y no 
 ln -sf ~/.local/bin/yttui ~/.cargo/bin/yttui
 ```
 
+> En CachyOS/Arch sin `pip` de sistema, instala en venv y enlaza los dos binarios al PATH. Si no, sale `No such file or directory: 'yt-dlp'` y no suena nada:
+>
+> ```bash
+> python3 -m venv ~/.local/share/yttui-venv
+> ~/.local/share/yttui-venv/bin/pip install -e .
+> mkdir -p ~/.local/bin ~/.cargo/bin
+> ln -sf ~/.local/share/yttui-venv/bin/yttui ~/.local/bin/yttui
+> ln -sf ~/.local/share/yttui-venv/bin/yttui ~/.cargo/bin/yttui
+> ln -sf ~/.local/share/yttui-venv/bin/yt-dlp ~/.local/bin/yt-dlp
+> ln -sf ~/.local/share/yttui-venv/bin/yt-dlp ~/.cargo/bin/yt-dlp
+> ```
+
 ## Configurar (1 vez)
 
 ```bash
@@ -70,6 +82,8 @@ Modo radio [radio]: al poner un tema suelto se precargan parecidos en la cola au
 
 Sin anuncios: usa stream directo vía `yt-dlp + mpv`. La URL se guarda en caché de sesión y el siguiente tema se precarga en segundo plano: el primer cambio tarda 1-3s (red), los siguientes son casi instantáneos. La carga no congela la app: la bolita `⠋` sigue girando mientras resuelve. Al cambiar hay fundido chiquito (baja 0.3s, sube 0.45s).
 
+Widget de Plasma (`plasmusic-toolbar` / Reproductor multimedia): al abrir `yttui` se lanza solo un demonio MPRIS aparte (`python -m yttui.mpris_daemon`, proceso separado y silenciado) que expone `org.mpris.MediaPlayer2.yttui`. Los botones Next/Prev/Play le escriben órdenes a la app por `/tmp/yttui-cmd.fifo`, así la TUI nunca se ensucia. Si el widget no lo ve, ponlo en reproductor automático o `yttui` (no `mpv`).
+
 ## Cómo funciona
 
 - `src/yttui/ytm.py`: search + likes + librería + `yt-dlp -g -f bestaudio` para URL.
@@ -81,6 +95,7 @@ Sin anuncios: usa stream directo vía `yt-dlp + mpv`. La URL se guarda en caché
 ## Si algo falla
 
 - `yttui: command not found` -> rehaz el symlink de arriba o abre nueva terminal.
+- `No such file or directory: 'yt-dlp'` -> `yt-dlp` quedó solo en el venv, enlázalo al PATH (ver bloque venv de arriba) y reinicia con `q` + `yttui`.
 - Likes vacíos / "Falta login" -> `yttui --setup` de nuevo.
 - No reproduce un tema restringido -> pon `cookies.txt` fresco (caducan si cierras sesión).
 - mpv sin sonido -> prueba `mpv --no-video <url>` y revisa volumen PipeWire.
