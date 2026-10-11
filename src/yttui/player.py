@@ -55,19 +55,6 @@ class Player:
         self._fade_gen = 0  # si cambia de tema a mitad del fundido, se cancela el viejo
         self._ramp_lock = threading.Lock()  # un solo fundido a la vez (si no, se pisan y puede quedar a 0)
 
-    @staticmethod
-    def _mpris_script() -> str | None:
-        """Ruta del plugin mpv-mpris si está instalado (para el widget de Plasma)."""
-        for p in (
-            "/usr/lib/mpv/mpris.so",
-            "/usr/lib/mpv-mpris/mpris.so",
-            "/usr/lib32/mpv/mpris.so",
-            "/usr/share/mpv/scripts/mpris.so",
-        ):
-            if Path(p).exists():
-                return p
-        return None
-
     def start(self) -> None:
         if self.proc and self.proc.poll() is None:
             return
@@ -76,11 +63,13 @@ class Player:
                 SOCK.unlink()
             except Exception:
                 pass
+        # Sin mpv-mpris a propósito: el MPRIS lo da el demonio yttui
+        # (mpris_daemon.py). OJO: el paquete mpv-mpris mete
+        # /etc/mpv/scripts/mpris.so y mpv lo autocarga igual; --no-config
+        # evita ese duplicado (el celu/widget agarraban ese y su Next
+        # no cambiaba de tema). No hay mpv.conf de usuario que perder.
         cmd = ["mpv", "--no-video", "--really-quiet", "--idle=yes",
-             f"--input-ipc-server={SOCK}", "--no-terminal"]
-        mpris = self._mpris_script()
-        if mpris:
-            cmd.append(f"--script={mpris}")
+             f"--input-ipc-server={SOCK}", "--no-terminal", "--no-config"]
         self.proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
