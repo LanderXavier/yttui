@@ -2,7 +2,7 @@
 
 Reproductor simple, sin ads, con atajos. Escribes `yttui` y listo.
 
-![yttui en acción](assets/captura.png)
+![yttui en acción](assets/yttui.png)
 
 ## Instalar
 
