@@ -2,15 +2,17 @@
 
 Reproductor simple, sin ads, con atajos. Escribes `yttui` y listo.
 
+![yttui en acción](assets/captura.png)
+
 ## Instalar
+
+Requisitos: `python3`, `mpv` y conexión a internet (`yt-dlp` y `ytmusicapi` se instalan solos con el paquete).
 
 ```bash
 git clone https://github.com/LanderXavier/yttui.git
 cd yttui
 pip install -e . --break-system-packages
 ```
-
-Ya tienes todo: `ytmusicapi`, `yt-dlp`, `mpv v0.41`. No necesita Textual (usa `curses` de serie).
 
 El comando queda en `~/.cargo/bin/yttui` (está en tu PATH). Si reinstalas y no lo encuentra:
 
@@ -30,20 +32,43 @@ ln -sf ~/.local/bin/yttui ~/.cargo/bin/yttui
 > ln -sf ~/.local/share/yttui-venv/bin/yt-dlp ~/.cargo/bin/yt-dlp
 > ```
 
+Verifica que todo quedó bien antes de seguir:
+
+```bash
+yttui --help
+yt-dlp --version
+mpv --version
+```
+
+Si los tres responden, la instalación está lista. Falta solo la configuración de abajo (una sola vez).
+
 ## Configurar (1 vez)
 
 ```bash
 yttui --setup
 ```
 
-1. **Cookies (para reproducir sin bloqueos):**
-   - Instala "Get cookies.txt LOCALLY" en tu navegador.
-   - Entra a `music.youtube.com` con tu cuenta y exporta.
-   - Guarda como `~/.config/yttui/cookies.txt`.
+### 1. Cookies (para reproducir sin bloqueos)
 
-2. **Login (para Mis Likes y Mi Librería):**
-   - El asistente te pide pegar tus headers: `music.youtube.com` logueado, F12 > Red, filtra `/browse`, copia "Request headers".
-   - Lo pega y genera `~/.config/yttui/browser.json` solo.
+Sin cookies YouTube bloquea los streams y no suena nada. Paso a paso:
+
+1. En tu navegador instala la extensión **"Get cookies.txt LOCALLY"** (está para Chrome y Firefox).
+2. Entra a `music.youtube.com` con tu cuenta e inicia sesión.
+3. Con esa pestaña abierta, abre la extensión y exporta las cookies del sitio (te descarga un `cookies.txt`).
+4. Mueve ese archivo a `~/.config/yttui/cookies.txt`:
+   ```bash
+   mkdir -p ~/.config/yttui
+   mv ~/Descargas/cookies.txt ~/.config/yttui/cookies.txt
+   ```
+
+> Si cambias tu contraseña o cierras sesión en el navegador, las cookies caducan: repite la exportación y reemplaza el archivo.
+
+### 2. Login (para Mis Likes y Mi Librería)
+
+1. En `music.youtube.com` ya con tu sesión, pulsa F12 para abrir las herramientas de desarrollador y ve a la pestaña **Red** (Network).
+2. Filtra por `/browse` y navega un poco por la página para que aparezcan peticiones.
+3. Clic derecho en una petición `/browse` > copiar los **"Request headers"** (como texto).
+4. Pégalo cuando `yttui --setup` te lo pida: eso genera `~/.config/yttui/browser.json` y listo.
 
 Sin login igual puedes buscar y reproducir. Con login ves Likes/Librería.
 
@@ -76,7 +101,7 @@ Atajos:
 | `?` | ayuda |
 | `q` | salir |
 
-Visualizador: panel grande de 12 filas estilo WMP/Ares con el título arriba y barras `██` de colores (verde -> amarillo -> rojo) que laten con la música, más picos `──` que caen lento. Las barras centrales son altas y se apagan hacia los lados. Lee el audio real del sistema (monitor PipeWire + FFT con numpy): los graves pegan con los golpes del tema. Si no hay monitor, usa simulación. Terminal mínima 70x29 para que quepa todo.
+Visualizador: panel grande de 12 filas estilo WMP/Ares con el título arriba y barras `██` de colores (verde -> amarillo -> rojo) que laten con la música, más picos `──` que caen lento. Las barras centrales son altas y se apagan hacia los lados. Lee el audio real del sistema (monitor PipeWire + FFT con numpy): los graves pegan con los golpes del tema. Si no hay monitor, usa simulación. Terminal mínima 70x29 para el modo completo; en ventanas chicas (dropdown arriba-derecha, panel lateral) entra solo el modo compacto: tema actual + onda de trazo fino `▁▂▃▄▅▆▇█` en 2-3 filas + lista con foco + pie con los atajos clave, con los mismos atajos.
 
 Modo radio [radio]: al poner un tema suelto se precargan parecidos en la cola automáticamente (hilo en segundo plano, sin congelar). Cuando se acaba un tema o la cola, sigue solo con parecidos (como el autoplay de YouTube). Con `n` al final de la cola también arranca radio. `r` en `one` repite el mismo.
 

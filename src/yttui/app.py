@@ -76,6 +76,12 @@ VIZ_H = 12  # panel alto estilo WMP/Ares
 VIZ_MIN_H = 29
 VIZ_MIN_W = 70
 
+# Modo compacto (ventanita arriba a la derecha, dropdown tipo Yakuake,
+# panel pequeño): a partir de aquí la app sigue usable sin el viz grande.
+COMPACT_MIN_W = 24
+COMPACT_MIN_H = 5
+MINI_BLOCKS = " ▁▂▃▄▅▆▇█"
+
 QUEUE_KEEP_ABOVE = 5  # historial visible por encima del que suena: lo más viejo se purga
 QUEUE_MAX_FUTURE = 20  # tope de temas en espera que mete la radio sola (no toca tus playlists)
 
@@ -312,11 +318,18 @@ class App:
         self.s.timeout(-1)
         try:
             curses.echo()
-            self.s.addstr(curses.LINES - 2, 0, "Buscar temas o playlists: ".ljust(curses.COLS - 1))
-            self.s.refresh()
+            h, w = self.s.getmaxyx()
+            # En ventana compacta el prompt largo + col 25 no cabe:
+            # se acorta y se escribe donde quepa.
+            prompt = "Buscar: " if w < VIZ_MIN_W else "Buscar temas o playlists: "
             try:
-                q = self.s.getstr(curses.LINES - 2, 25, 100).decode().strip()
-            except Exception:
+                self.s.addstr(h - 2, 0, prompt.ljust(max(0, w - 1))[: max(0, w - 1)])
+                self.s.refresh()
+                try:
+                    q = self.s.getstr(h - 2, min(len(prompt), max(0, w - 2)), max(10, w - len(prompt) - 2)).decode().strip()
+                except Exception:
+                    q = ""
+            except curses.error:
                 q = ""
         finally:
             curses.noecho()
@@ -706,8 +719,7 @@ class App:
         s.clear()
         h, w = s.getmaxyx()
         if h < VIZ_MIN_H or w < VIZ_MIN_W:
-            self._put(0, 0, f"  Agranda la terminal  (mín {VIZ_MIN_W}x{VIZ_MIN_H})")
-            s.refresh()
+            self.draw_compact(h, w)
             return
         queue_w = min(38, w // 3)
         left_w = w - queue_w - 1  # col left_w = divisor vertical
@@ -898,6 +910,207 @@ class App:
         if self.show_help:
             self._draw_help_overlay(w, h)
         s.refresh()
+
+    # ---- modo compacto: ventanita pequeña (dropdown arriba-derecha) ----
+    def draw_compact(self, h: int, w: int) -> None:
+        """Layout que cabe en terminales chicas (ej. 40x12).
+
+        Sin viz grande ni doble columna: cabecera mínima, tema actual,
+        mini-espectro de 1 línea y la lista con foco + pie corto.
+        Los atajos son los mismos, así funciona igual que en grande.
+        """
+        s = self.s
+        c_green = self._pair(1)
+        c_yellow = self._pair(2)
+        c_red = self._pair(3)
+        c_mag = self._pair(4)
+        c_cyan = self._pair(5)
+        c_blue = self._pair(6)
+        c_dim = curses.A_DIM
+        c_bold = curses.A_BOLD
+
+        cur = self.player.current
+        playing = cur is not None and not self.player.paused
+
+        if w < COMPACT_MIN_W or h < COMPACT_MIN_H:
+            txt = self.fit(f"♪ {self.label(cur)[:40]}" if cur else "♪ yttui: agranda un poco", max(0, w - 1))
+            self._put(0, 0, txt, c_bold)
+            if h >= 2:
+                self._put(1, 0, self.fit(": buscar  Enter tocar  q salir", max(0, w - 1)), c_dim)
+            s.refresh()
+            return
+
+        # 0. cabecera compacta: tabs + estado a la derecha si cabe
+        self._put(0, 0, " " * (w - 1))
+        self._put(0, 1, "♪ yttui", c_cyan | c_bold)
+        cx = 9
+        for num, want in (("1", "search"), ("2", "likes"), ("3", "library")):
+            active = self.screen == want
+            self._put(0, cx, f" {num}", c_bold | (curses.A_REVERSE if active else c_dim))
+            cx += 3
+        focus_txt = "cola▶" if self.focus == "queue" else "◀lista"
+        vol = f"{focus_txt} {self.player.volume:3d} {'SHUF' if self.shuffle else 'seq'} {self.repeat}"
+        if len(vol) + cx + 1 < w:
+            self._put(0, w - 1 - len(vol), vol, c_dim)
+
+        # 1. lo que suena (o cargando)
+        if self.loading:
+            ball = SPINNER[self.tick % len(SPINNER)]
+            now = f"{ball} Cargando…"
+            self._put(1, 0, self.fit(now, w - 1).ljust(max(0, w - 1)), c_yellow | c_bold)
+        elif cur:
+            icon = "▶" if playing else "❚❚"
+            self._put(1, 0, self.fit(f"{icon} {self.label(cur)}", w - 1).ljust(max(0, w - 1)), c_bold)
+        else:
+            self._put(1, 0, self.fit("○ nada sonando — : busca", w - 1), c_dim)
+
+        # 2. onda compacta con trazo fino (2-3 filas): caracteres
+        # verticales de 1/8 (▁▂▃▄▅▆▇█) en vez de bloques macizos.
+        # Así no se ve el mazacote naranja/verde: la curva queda suave
+        # y las listas bajan igual un par de filas.
+        row = 2
+        if h >= 12 and w >= 30:
+            mini_h = 3
+        elif h >= 9 and w >= 30:
+            mini_h = 2
+        elif h >= 7:
+            mini_h = 1
+        else:
+            mini_h = 0
+        if mini_h > 0:
+            n_bars = max(8, w - 2)
+            self._update_viz(n_bars, playing, self.loading)
+            smooth = " ▁▂▃▄▅▆▇█"  # 0=vacío, 8=lleno (resolución fina)
+            for r in range(mini_h):
+                # color por fila: base verde, medio amarillo, punta roja
+                if r == mini_h - 1:
+                    attr = c_green
+                elif mini_h >= 3 and r == 0:
+                    attr = c_red
+                else:
+                    attr = c_yellow
+                base = (mini_h - 1 - r) * 8  # pasos que se come lo de abajo
+                chars: list[str] = []
+                for i in range(n_bars):
+                    frac = self.viz_levels[i] if i < len(self.viz_levels) else 0.0
+                    if frac < 0.05:
+                        chars.append(" ")
+                        continue
+                    fill = frac * mini_h * 8 - base
+                    idx = int(fill + 0.5)
+                    idx = max(0, min(8, idx))
+                    chars.append(smooth[idx])
+                try:
+                    self._put(row, 1, "".join(chars)[: max(0, w - 2)], attr)
+                except Exception:
+                    pass
+                row += 1
+
+        # 3. lista con foco (izquierda o cola). En chico no hay doble
+        # columna: se muestra solo el panel activo y Tab cambia.
+        self.clamp()
+        if self.focus == "queue":
+            title = f"≡ Cola · {len(self.queue)}  (Tab: ver lista)"
+            items_n = len(self.queue)
+        else:
+            items = self.left_items()
+            if self.screen == "search":
+                title = f"♪ Resultados {len(self.results)}+{len(self.found_playlists)} (Tab: ver cola)"
+            elif self.screen == "likes":
+                title = f"♥ Likes {len(self.results)} (Tab: ver cola)"
+            else:
+                title = f"▦ Librería {len(self.playlists)} (Tab: ver cola)"
+            items_n = len(items)
+        self._put(row, 0, "─" * max(0, w - 1), c_blue | c_dim)
+        row += 1
+        if row < h - 2:
+            mark = "▶ " if True else ""
+            attr = c_mag | c_bold if self.focus == "queue" else c_bold
+            self._put(row, 0, self.fit(mark + title, w - 1), attr)
+            row += 1
+
+        list_rows = max(0, (h - 2) - row)  # deja 2 filas de pie
+        if self.focus == "queue":
+            start = max(0, min(max(0, self.qsel - list_rows + 1), max(0, len(self.queue) - max(1, list_rows))))
+            for i in range(list_rows):
+                idx = start + i
+                if idx >= len(self.queue):
+                    break
+                t = self.queue[idx]
+                txt = self.fit(f"{t.get('title','').strip()} — {t.get('artists','').strip()}", w - 8)
+                is_playing = idx == self.qpos
+                is_cursor = idx == self.qsel
+                cursor = "▶" if is_playing else ("►" if is_cursor else " ")
+                line = f" {cursor}{idx + 1:2d} {txt}"
+                if is_playing:
+                    attr = c_mag | c_bold
+                elif is_cursor:
+                    attr = curses.A_REVERSE | c_bold
+                else:
+                    attr = 0
+                self._put(row + i, 0, line.ljust(max(0, w - 1))[: max(0, w - 1)], attr)
+            if not self.queue and list_rows > 0:
+                self._put(row, 2, self.fit("vacía: : busca, a suma", w - 4), c_dim)
+        else:
+            items = self.left_items()
+            start = max(0, min(self.sel - list_rows + 1, max(0, len(items) - max(1, list_rows))))
+            for i in range(list_rows):
+                idx = start + i
+                if idx >= len(items):
+                    break
+                kind, d = items[idx]
+                txt = self.fit(self.left_label(kind, d), w - 4)
+                is_cur = idx == self.sel
+                line = f" {'►' if is_cur else ' '} {txt}"
+                if is_cur:
+                    attr = curses.A_REVERSE | c_bold
+                elif kind != "song":
+                    attr = c_cyan
+                else:
+                    attr = 0
+                self._put(row + i, 0, line.ljust(max(0, w - 1))[: max(0, w - 1)], attr)
+            if not items_n and list_rows > 0:
+                self._put(row, 2, self.fit("vacío: pulsa : y busca", w - 4), c_dim)
+
+        # 4. pie: mensaje + atajos importantes, bonito (tecla resaltada)
+        self._put(h - 2, 0, ("› " + self.fit(self.msg, w - 4)).ljust(max(0, w - 1))[: max(0, w - 1)])
+        self._draw_compact_hints(h - 1, w)
+        if self.show_help:
+            self._draw_help_overlay(w, h)
+        s.refresh()
+
+    # Atajos clave en compacto: pocos pero legibles (tecla cyan+bold).
+    COMPACT_HINTS: list[tuple[str, str]] = [
+        ("Tab", "foco"),
+        (":", "buscar"),
+        ("Enter", "tocar"),
+        ("Espacio", "pausa"),
+        ("n/p", "sig"),
+        ("q", "salir"),
+    ]
+
+    def _draw_compact_hints(self, y: int, w: int) -> None:
+        try:
+            self.s.addstr(y, 0, " " * (w - 1))
+        except curses.error:
+            return
+        c_key = self._pair(5) | curses.A_BOLD
+        c_desc = curses.A_DIM
+        x = 1
+        for i, (key, desc) in enumerate(self.COMPACT_HINTS):
+            seg_key, seg_desc = f"[{key}]", f"{desc}"
+            if x + len(seg_key) + 1 + len(seg_desc) >= w - 1:
+                break
+            try:
+                self.s.addstr(y, x, seg_key, c_key)
+                x += len(seg_key)
+                self.s.addstr(y, x, f" {seg_desc}", c_desc)
+                x += len(seg_desc) + 1
+                if i < len(self.COMPACT_HINTS) - 1 and x + 3 < w - 1:
+                    self.s.addstr(y, x, "· ", c_desc)
+                    x += 2
+            except curses.error:
+                break
 
     def _draw_key_hints(self, y: int, w: int, c_key: int, c_desc: int) -> None:
         """Pie con cada tecla resaltada: `Tab foco` se lee de un vistazo."""
